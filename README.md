@@ -294,6 +294,19 @@ auto-picks the first free dashboard port starting at `4000`, so multiple repo
 daemons can run in parallel. It also passes through Symphony CLI flags, such as
 the preview acknowledgement flag required by the current Elixir implementation.
 
+For VM-wide Codex settings, install `files/symphony-codex` to
+`~/.local/bin/symphony-codex` and set these in
+`~/.config/ralph-symphony/env`:
+
+```bash
+export SYMPHONY_CODEX_MODEL="gpt-5.5"
+export SYMPHONY_CODEX_EFFORT="low"
+export SYMPHONY_CODEX_FAST_MODE="false"
+```
+
+The reference `WORKFLOW.md` uses `command: symphony-codex app-server`, so those
+settings apply across all Symphony projects on the VM.
+
 _Mode selection:_
 
 - No keyword → Uses `PROMPT_build.md` for building (implementation)
@@ -482,6 +495,7 @@ Symphony's repo-owned workflow contract. It contains YAML front matter for track
 - _Consumed_ by the Symphony daemon
 - _Scoped_ to one tracker issue at a time
 - _Handoff_ should usually be `Human Review`, not `Done`
+- _Claiming_ uses `tracker.claim_state` so picked-up issues move to `In Progress`
 
 Use `files/WORKFLOW.md` as the starting template.
 

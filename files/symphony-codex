@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+env_file="${RALPH_SYMPHONY_ENV:-$HOME/.config/ralph-symphony/env}"
+if [ -f "$env_file" ]; then
+    # shellcheck disable=SC1090
+    . "$env_file"
+fi
+
+args=(codex)
+
+if [ -n "${SYMPHONY_CODEX_MODEL:-}" ]; then
+    args+=(--model "$SYMPHONY_CODEX_MODEL")
+fi
+
+if [ -n "${SYMPHONY_CODEX_EFFORT:-}" ]; then
+    case "$SYMPHONY_CODEX_EFFORT" in
+        low|medium|high|xhigh)
+            args+=(-c "model_reasoning_effort=\"$SYMPHONY_CODEX_EFFORT\"")
+            ;;
+        *)
+            echo "Invalid SYMPHONY_CODEX_EFFORT: $SYMPHONY_CODEX_EFFORT" >&2
+            echo "Expected one of: low, medium, high, xhigh" >&2
+            exit 2
+            ;;
+    esac
+fi
+
+case "${SYMPHONY_CODEX_FAST_MODE:-}" in
+    1|true|TRUE|yes|YES|on|ON)
+        args+=(--enable fast_mode)
+        ;;
+    0|false|FALSE|no|NO|off|OFF)
+        args+=(--disable fast_mode)
+        ;;
+    "")
+        ;;
+    *)
+        echo "Invalid SYMPHONY_CODEX_FAST_MODE: $SYMPHONY_CODEX_FAST_MODE" >&2
+        echo "Expected true/false, yes/no, on/off, or 1/0" >&2
+        exit 2
+        ;;
+esac
+
+exec "${args[@]}" "$@"

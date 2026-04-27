@@ -13,6 +13,10 @@ tracker:
     - Cancelled
     - Canceled
     - Duplicate
+  claim_state: In Progress
+  handoff_state: Human Review
+  rework_state: Rework
+  merging_state: Merging
 
 polling:
   interval_ms: 30000
@@ -37,7 +41,7 @@ agent:
   max_retry_backoff_ms: 300000
 
 codex:
-  command: codex app-server
+  command: symphony-codex app-server
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:

@@ -828,6 +828,10 @@ tracker:
     - Cancelled
     - Canceled
     - Duplicate
+  claim_state: In Progress
+  handoff_state: Human Review
+  rework_state: Rework
+  merging_state: Merging
 
 polling:
   interval_ms: 30000
@@ -852,7 +856,7 @@ agent:
   max_retry_backoff_ms: 300000
 
 codex:
-  command: codex app-server
+  command: symphony-codex app-server
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -957,6 +961,31 @@ chmod 600 ~/.config/ralph-symphony/env
 Do not put a real `lin_api_...` token in `WORKFLOW.md`, `AGENTS.md`, this
 playbook repo, or any project repo. `WORKFLOW.md` should keep using
 `api_key: $LINEAR_API_KEY`.
+
+Install the global Codex wrapper so all Symphony projects on the VM can share
+one model, reasoning effort, and fast-mode setting:
+
+```bash
+install -m 755 /path/to/ralph-playbook/files/symphony-codex ~/.local/bin/symphony-codex
+```
+
+Add or edit these VM-wide settings in `~/.config/ralph-symphony/env`:
+
+```bash
+export SYMPHONY_CODEX_MODEL="gpt-5.5"
+export SYMPHONY_CODEX_EFFORT="low"       # low, medium, high, or xhigh
+export SYMPHONY_CODEX_FAST_MODE="false"  # true or false
+```
+
+`WORKFLOW.md` should call the wrapper:
+
+```yaml
+codex:
+  command: symphony-codex app-server
+```
+
+Changing those three env vars changes the Codex model settings for every repo
+whose workflow uses `symphony-codex app-server`.
 
 Run Symphony against this repo's workflow file:
 
