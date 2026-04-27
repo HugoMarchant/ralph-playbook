@@ -283,6 +283,17 @@ _Reference loop behavior:_
 
 See `files/loop.sh` for the current reference script and `INSTALLATION.md` for the full installable template.
 
+### Symphony outer loop
+
+For unattended, issue-sized work, keep the Ralph repo scaffold and add `WORKFLOW.md` for [OpenAI Symphony](https://github.com/openai/symphony). Symphony uses a tracker such as Linear as the control plane, creates one isolated workspace per issue, and launches Codex app-server for each active issue. The reference `files/WORKFLOW.md` in this repo starts with `max_concurrent_agents: 1` and hands completed PRs to `Human Review` instead of marking issues done automatically.
+
+For local convenience, `files/symphony-bashrc.sh` installs a one-word
+`symphony` shell helper. It loads `LINEAR_API_KEY` from
+`~/.config/ralph-symphony/env`, uses the current repo's `WORKFLOW.md`, and
+auto-picks the first free dashboard port starting at `4000`, so multiple repo
+daemons can run in parallel. It also passes through Symphony CLI flags, such as
+the preview acknowledgement flag required by the current Elixir implementation.
+
 _Mode selection:_
 
 - No keyword → Uses `PROMPT_build.md` for building (implementation)
@@ -308,6 +319,8 @@ project-root/
 ├── PROMPT_plan.md                  # Plan mode instructions
 ├── AGENTS.md                       # Operational guide loaded each iteration
 ├── IMPLEMENTATION_PLAN.md          # Prioritized task list (generated/updated by Ralph)
+├── WORKFLOW.md                     # Symphony config + issue-scoped Codex prompt
+├── .codex/skills/                  # Optional Symphony/Codex skills
 ├── specs/                          # Requirement specs (one per JTBD topic)
 │   ├── [jtbd-topic-a].md
 │   └── [jtbd-topic-b].md
@@ -460,6 +473,17 @@ Prioritized bullet-point list of tasks derived from gap analysis (specs vs code)
 The circularity is intentional: eventual consistency through iteration.
 
 _No pre-specified template_ - let Ralph/LLM dictate and manage format that works best for it.
+
+### `WORKFLOW.md`
+
+Symphony's repo-owned workflow contract. It contains YAML front matter for tracker, workspace, hook, concurrency, and Codex app-server settings, followed by the issue-scoped prompt body.
+
+- _Created_ when the repo should be ready for unattended Linear-driven work
+- _Consumed_ by the Symphony daemon
+- _Scoped_ to one tracker issue at a time
+- _Handoff_ should usually be `Human Review`, not `Done`
+
+Use `files/WORKFLOW.md` as the starting template.
 
 ### `specs/*`
 

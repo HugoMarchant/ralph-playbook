@@ -1,6 +1,32 @@
-# Ralph Loop Installation Guide
+# Ralph + Symphony Developer Workflow Installation Guide
 
-This guide provides exhaustive, step-by-step instructions for implementing Ralph loops into a new or existing repository. It is designed to be followed by an LLM assistant (e.g. Codex CLI or Claude Code) working with a human developer.
+This guide provides exhaustive, step-by-step instructions for implementing Ralph loops into a new or existing repository, then optionally adding Symphony as a board-driven outer loop for parallel unattended work. It is designed to be followed by an LLM assistant (e.g. Codex CLI or Claude Code) working with a human developer.
+
+The target workflow is:
+
+```text
+Local / deliberate work:
+specs/* + AGENTS.md + IMPLEMENTATION_PLAN.md
+        ↓
+./loop.sh plan
+        ↓
+./loop.sh
+        ↓
+one task per fresh Codex or Claude CLI execution
+
+Parallel / unattended work:
+Linear issue board
+        ↓
+Symphony daemon
+        ↓
+one isolated workspace per issue
+        ↓
+Codex app-server session per issue
+        ↓
+branch / PR / Linear comment / Human Review handoff
+```
+
+Keep Ralph as the repo-level harness. Add Symphony when the repository has enough specs, tests, and workflow discipline for issue-sized work to run unattended.
 
 > **For the implementing LLM:** At several steps you will need information from the human you are working with. These are marked with **ASK THE HUMAN**. Do not guess or assume — ask them directly using your question/prompt tools before proceeding.
 
@@ -16,15 +42,17 @@ This guide provides exhaustive, step-by-step instructions for implementing Ralph
 6. [Create PROMPT_build.md](#6-create-prompt_buildmd)
 7. [Create IMPLEMENTATION_PLAN.md](#7-create-implementation_planmd)
 8. [Create loop.sh](#8-create-loopsh)
-9. [Create Specification Files](#9-create-specification-files)
-10. [Update .gitignore](#10-update-gitignore)
-11. [Security: Sandbox Setup](#11-security-sandbox-setup)
-12. [First Run: Planning Mode](#12-first-run-planning-mode)
-13. [Building Mode](#13-building-mode)
-14. [Ongoing Operation & Tuning](#14-ongoing-operation--tuning)
-15. [Optional Enhancements](#15-optional-enhancements)
-16. [Troubleshooting](#16-troubleshooting)
-17. [Quick Reference](#17-quick-reference)
+9. [Create WORKFLOW.md for Symphony](#9-create-workflowmd-for-symphony)
+10. [Create Specification Files](#10-create-specification-files)
+11. [Update .gitignore](#11-update-gitignore)
+12. [Security: Sandbox Setup](#12-security-sandbox-setup)
+13. [First Run: Planning Mode](#13-first-run-planning-mode)
+14. [Building Mode](#14-building-mode)
+15. [Symphony Outer Loop](#15-symphony-outer-loop)
+16. [Ongoing Operation & Tuning](#16-ongoing-operation--tuning)
+17. [Optional Enhancements](#17-optional-enhancements)
+18. [Troubleshooting](#18-troubleshooting)
+19. [Quick Reference](#19-quick-reference)
 
 ---
 
@@ -40,6 +68,7 @@ Before starting, ensure the following are installed and available:
 | **Git** | Version control; Ralph commits after each task | `git --version` |
 | **Bash** | Shell to run the loop script | `bash --version` |
 | **An OpenAI API key** (for Codex) or **Anthropic API key** (for Claude) | Required for the chosen CLI | `echo $OPENAI_API_KEY` or `echo $ANTHROPIC_API_KEY` |
+| **GitHub CLI** | PR creation and review handoff, especially for Symphony workspaces | `gh --version` |
 
 The loop script defaults to **Codex CLI** (`codex`). To use **Claude Code CLI** instead, set the environment variable `RALPH_CLI=claude` (see [Section 8](#8-create-loopsh) for details).
 
@@ -62,10 +91,24 @@ npm install -g @anthropic-ai/claude-code
 - The repository must be a **git repository** (run `git init` if it is not).
 - The repository must have a **remote configured** if you want auto-push after each loop iteration (run `git remote -v` to check).
 - Your chosen CLI must be **authenticated** (run `codex` or `claude` interactively once to verify it works).
+- GitHub CLI should be authenticated if agents will open or update PRs (run `gh auth status`).
+
+### Optional for Symphony
+
+Use these when the repo should support the board-driven outer loop:
+
+| Tool / Account | Purpose | Install Check |
+|----------------|---------|---------------|
+| **Linear project** | Issue board / control plane for agent work | Project URL and slug available |
+| **Linear API key** | Lets Symphony read active issues and lets Codex update issue state through Symphony tooling | `echo $LINEAR_API_KEY` |
+| **mise** | Recommended runtime manager for the Symphony Elixir reference implementation | `mise --version` |
+| **Symphony reference implementation** | Experimental orchestration daemon for evaluation | `test -x ./bin/symphony` from `symphony/elixir` |
+
+Symphony currently assumes Linear for the published workflow contract (`tracker.kind: linear`). If the human wants GitHub Issues instead, do not pretend it is already supported by the reference setup. Treat the first Symphony task as: "Implement a Symphony tracker adapter for GitHub Issues based on `SPEC.md`."
 
 ### Recommended
 
-- A **sandbox environment** for running Ralph autonomously (Docker, E2B, Fly Sprites, etc.) — see [Section 11](#11-security-sandbox-setup) for details. Ralph runs with permission-bypassing flags (`--dangerously-bypass-approvals-and-sandbox` for Codex, `--dangerously-skip-permissions` for Claude) which bypass all safety prompts.
+- A **sandbox environment** for running Ralph or Symphony autonomously (Docker, E2B, Fly Sprites, etc.) — see [Section 12](#12-security-sandbox-setup) for details. Ralph runs with permission-bypassing flags (`--dangerously-bypass-approvals-and-sandbox` for Codex, `--dangerously-skip-permissions` for Claude) which bypass all safety prompts. Symphony runs long-lived Codex app-server sessions and should be treated as at least as sensitive.
 - **Tests, linting, and/or type-checking** already configured in the project. These provide "backpressure" — the mechanism that forces Ralph to fix issues before committing. Without backpressure, Ralph has no quality gate.
 
 ---
@@ -103,7 +146,7 @@ npm install -g @anthropic-ai/claude-code
 
 7. **Are there any existing Jobs to Be Done (JTBDs) or feature requirements?**
    - If yes, these will become the initial spec files in `specs/`.
-   - If no, you will need to help the human define these (see [Section 9](#9-create-specification-files)).
+   - If no, you will need to help the human define these (see [Section 10](#10-create-specification-files)).
 
 8. **Does the project already have a `CLAUDE.md` or `.claude/` configuration?**
    - If yes, Ralph's `AGENTS.md` will complement but not replace it. `CLAUDE.md` is loaded automatically by Claude Code; `AGENTS.md` is loaded explicitly by the prompt.
@@ -125,6 +168,32 @@ npm install -g @anthropic-ai/claude-code
       - Alternative: `sonnet` (faster, cheaper, good for well-defined tasks).
       - Recommendation: Use `opus` for planning mode, optionally `sonnet` for building mode if the plan is clear and tasks are well-defined.
 
+12. **Should this repository also support Symphony?**
+    - Default: **yes, but start disabled**. Add `WORKFLOW.md` and the documented Linear states, but keep using local Ralph until the repo has specs, tests, and a reviewed plan.
+    - If yes, ask the follow-up questions below.
+
+### Additional Questions for Symphony
+
+Ask these only if the human wants the board-driven outer loop.
+
+1. **What Linear project should agents use as the control plane?**
+   - Capture the project slug from the Linear project URL.
+   - Recommended states: `Todo`, `In Progress`, `Rework`, `Human Review`, `Merging`, `Done`, `Cancelled`, `Duplicate`.
+
+2. **What repository clone URL should new issue workspaces use?**
+   - Prefer a deploy-key-friendly SSH URL, e.g. `git@github.com:ORG/REPO.git`.
+
+3. **What workspace root should Symphony use?**
+   - Default: `~/code/symphony-workspaces`.
+   - Use a dedicated devbox/container path when possible.
+
+4. **What concurrency should Symphony start with?**
+   - Default: `agent.max_concurrent_agents: 1`.
+   - Increase to `2` or `3` only after a successful smoke test and one real issue.
+
+5. **Is the agent allowed to move issues to `Done`?**
+   - Default: no. Agents move completed PRs to `Human Review`; humans decide merge/done.
+
 ---
 
 ## 3. Create the Directory Structure
@@ -141,7 +210,14 @@ project-root/
 ├── AGENTS.md                       # Operational guide loaded each iteration (created in step 4)
 ├── CLAUDE.md                       # Copy of AGENTS.md for Claude Code CLI compatibility (created in step 4)
 ├── IMPLEMENTATION_PLAN.md          # Prioritized task list - generated by Ralph (created in step 7)
-├── specs/                          # Requirement specs - one per JTBD topic (created in step 9)
+├── WORKFLOW.md                     # Symphony repo contract (created in step 9, optional but recommended)
+├── .codex/skills/                  # Optional repo-local skills used by Symphony/Codex
+│   ├── commit/
+│   ├── push/
+│   ├── pull/
+│   ├── land/
+│   └── linear/
+├── specs/                          # Requirement specs - one per JTBD topic (created in step 10)
 │   ├── [jtbd-topic-a].md
 │   └── [jtbd-topic-b].md
 ├── src/                            # Application source code (should already exist)
@@ -156,6 +232,10 @@ mkdir -p specs
 
 # Create src/lib if it doesn't exist (adjust path based on human's answers)
 mkdir -p src/lib
+
+# If enabling Symphony, create the optional repo-local skills directory.
+# The skill contents can be copied from openai/symphony/.codex when you adopt the reference setup.
+mkdir -p .codex/skills
 ```
 
 **Note:** If the human told you their source code is in a different location (e.g. `app/` instead of `src/`), adjust all paths accordingly in every file you create below.
@@ -664,7 +744,7 @@ RALPH_CLI=claude RALPH_MODEL=sonnet ./loop.sh 20
 | `--enable fast_mode` | **Enable Codex fast mode.** The reference loop adds this when you pass `--fast`. |
 | `--disable fast_mode` | **Make the run mode explicit.** The reference loop passes this when `--fast` is not set. |
 | `-c model_reasoning_effort="..."` | **Set Codex reasoning effort.** The reference loop adds this when you pass `--effort low`, `medium`, `high`, or `xhigh`. |
-| `--dangerously-bypass-approvals-and-sandbox` | **Bypasses all approval prompts and sandbox restrictions.** Required for fully automated runs. This is why a sandbox environment is critical — see [Section 11](#11-security-sandbox-setup). |
+| `--dangerously-bypass-approvals-and-sandbox` | **Bypasses all approval prompts and sandbox restrictions.** Required for fully automated runs. This is why a sandbox environment is critical — see [Section 12](#12-security-sandbox-setup). |
 | `-` | **Read from stdin.** Tells Codex to read the prompt from the pipe. |
 
 #### Claude Code CLI Flags
@@ -672,14 +752,275 @@ RALPH_CLI=claude RALPH_MODEL=sonnet ./loop.sh 20
 | Flag | Purpose |
 |------|---------|
 | `-p` | **Headless mode.** Non-interactive operation, reads prompt from stdin. Required for automation. |
-| `--dangerously-skip-permissions` | **Bypasses all permission prompts.** Required for fully automated runs. This is why a sandbox is critical — see [Section 11](#11-security-sandbox-setup). |
+| `--dangerously-skip-permissions` | **Bypasses all permission prompts.** Required for fully automated runs. This is why a sandbox is critical — see [Section 12](#12-security-sandbox-setup). |
 | `--output-format=stream-json` | **Structured output.** Enables logging and monitoring of the loop's progress. |
 | `--model opus` | **Primary model.** Opus for complex reasoning (task selection, prioritization, coordination). |
 | `--verbose` | **Detailed logging.** Provides visibility into what the agent is doing. |
 
 ---
 
-## 9. Create Specification Files
+## 9. Create WORKFLOW.md for Symphony
+
+`WORKFLOW.md` is the repo-owned Symphony contract. It combines YAML front matter for runtime settings with a Markdown prompt body for the per-issue Codex session.
+
+Reference docs:
+
+- OpenAI Symphony announcement: https://openai.com/index/open-source-codex-orchestration-symphony/
+- Symphony spec: https://github.com/openai/symphony/blob/main/SPEC.md
+- Elixir reference implementation: https://github.com/openai/symphony/blob/main/elixir/README.md
+
+Ralph and Symphony should share the same repository signs:
+
+- `AGENTS.md` remains the short operational guide.
+- `specs/*` remain the product and technical requirements.
+- `IMPLEMENTATION_PLAN.md` remains supporting state.
+- `WORKFLOW.md` makes the Linear issue the immediate scope for unattended work.
+
+### When to Create It
+
+Create `WORKFLOW.md` by default for new repos, even if Symphony will not run on day one. It is cheap to keep versioned and makes the repo ready for a later daemon rollout.
+
+Do **not** run Symphony until:
+
+- `AGENTS.md` has accurate install, build, test, lint, and typecheck commands.
+- At least one meaningful spec exists in `specs/`.
+- `./loop.sh plan` has produced a reviewed `IMPLEMENTATION_PLAN.md`.
+- The repo can be cloned and validated in a disposable workspace.
+- GitHub CLI and Linear authentication are available in the sandbox/devbox where Symphony will run.
+
+### Linear Workflow States
+
+Create or customize a Linear project for agent work with these states:
+
+| Linear state | Meaning |
+|--------------|---------|
+| `Todo` | Symphony may pick it up |
+| `In Progress` | Agent is actively working |
+| `Rework` | Agent should address feedback |
+| `Human Review` | PR is ready for human review |
+| `Merging` | Agent may shepherd CI/rebase/merge if allowed |
+| `Done` | Terminal; workspace can be cleaned |
+| `Cancelled` / `Duplicate` | Terminal; stop work |
+
+The reference Symphony setup uses non-standard states such as `Rework`, `Human Review`, and `Merging`. Add them in Linear Team Settings -> Workflow before relying on this template.
+
+### Template
+
+Create `WORKFLOW.md` in the project root. If you are setting up from this playbook repo, copy `files/WORKFLOW.md` first and then replace:
+
+- `your-linear-project-slug` with the Linear project slug.
+- `YOUR_ORG/YOUR_REPO` with the GitHub repo path.
+- `~/code/symphony-workspaces` with the chosen isolated workspace root if different.
+
+```markdown
+---
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  project_slug: "your-linear-project-slug"
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+  terminal_states:
+    - Done
+    - Closed
+    - Cancelled
+    - Canceled
+    - Duplicate
+
+polling:
+  interval_ms: 30000
+
+workspace:
+  root: ~/code/symphony-workspaces
+
+hooks:
+  after_create: |
+    git clone git@github.com:YOUR_ORG/YOUR_REPO.git .
+  before_run: |
+    git fetch origin
+    git status
+    test -f AGENTS.md
+    test -f IMPLEMENTATION_PLAN.md || touch IMPLEMENTATION_PLAN.md
+  after_run: |
+    git status
+
+agent:
+  max_concurrent_agents: 1
+  max_turns: 10
+  max_retry_backoff_ms: 300000
+
+codex:
+  command: codex app-server
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  turn_timeout_ms: 3600000
+  stall_timeout_ms: 300000
+---
+
+You are working on Linear issue {{ issue.identifier }}.
+
+Title:
+{{ issue.title }}
+
+Description:
+{{ issue.description }}
+
+The Linear issue is the source of immediate scope.
+IMPLEMENTATION_PLAN.md is supporting context.
+Do not wander outside the issue unless needed to satisfy acceptance criteria.
+
+Operate like a Ralph build iteration, but scoped to this Linear issue.
+
+Read:
+- AGENTS.md for operational instructions
+- specs/* for product and technical requirements
+- IMPLEMENTATION_PLAN.md if present
+- the existing source code before assuming anything is missing
+
+Rules:
+1. Create or checkout a branch named from the issue identifier.
+2. Understand the issue and confirm whether it maps to an existing spec or plan item.
+3. Do not assume functionality is missing; search first.
+4. Implement the smallest complete increment that satisfies this issue.
+5. Add or update tests derived from the acceptance criteria.
+6. Run the relevant tests, type checks, linters, and builds from AGENTS.md.
+7. Keep IMPLEMENTATION_PLAN.md current with discoveries and remaining work.
+8. Keep AGENTS.md operational only; add only durable build/test/run learnings.
+9. Commit the work with a message including {{ issue.identifier }}.
+10. Push the branch.
+11. Open or update a PR using gh.
+12. Comment on the Linear issue with:
+    - PR link
+    - validation run
+    - remaining risks
+    - what needs human review
+13. Move the issue to Human Review when the PR is ready.
+
+Do not mark the issue Done yourself unless the repository workflow explicitly allows it.
+If the issue is too large, create child Linear issues and stop at Human Review with a planning summary.
+```
+
+### Optional Repo-Local Codex Skills
+
+If using the OpenAI Symphony Elixir reference implementation, optionally copy these skills from the Symphony repo into the target repo:
+
+```text
+.codex/skills/commit/
+.codex/skills/push/
+.codex/skills/pull/
+.codex/skills/land/
+.codex/skills/linear/
+```
+
+The `linear` skill expects Symphony's `linear_graphql` app-server tool. Use it for raw Linear operations such as comments, status changes, and upload flows without exposing the Linear token directly to normal shell commands.
+
+### Setup the Symphony Reference Implementation
+
+The OpenAI repo presents two paths:
+
+1. Build a hardened implementation from `SPEC.md` in your preferred stack.
+2. Evaluate the experimental Elixir implementation.
+
+For a trial:
+
+```bash
+git clone https://github.com/openai/symphony
+cd symphony/elixir
+
+mise trust
+mise install
+mise exec -- mix setup
+mise exec -- mix build
+```
+
+Set the Linear token in the environment where Symphony runs:
+
+```bash
+export LINEAR_API_KEY="lin_api_..."
+```
+
+For repeated local use, keep the token in a private env file outside the repo
+instead of exporting it by hand or committing it:
+
+```bash
+mkdir -p ~/.config/ralph-symphony
+chmod 700 ~/.config/ralph-symphony
+umask 077
+printf 'export LINEAR_API_KEY=%q\n' 'lin_api_...' > ~/.config/ralph-symphony/env
+chmod 600 ~/.config/ralph-symphony/env
+```
+
+Do not put a real `lin_api_...` token in `WORKFLOW.md`, `AGENTS.md`, this
+playbook repo, or any project repo. `WORKFLOW.md` should keep using
+`api_key: $LINEAR_API_KEY`.
+
+Run Symphony against this repo's workflow file:
+
+```bash
+mise exec -- ./bin/symphony /path/to/your/repo/WORKFLOW.md
+```
+
+To enable the optional observability service:
+
+```bash
+mise exec -- ./bin/symphony /path/to/your/repo/WORKFLOW.md --port 4000
+```
+
+The current Elixir preview may require an explicit guardrails acknowledgement
+flag before it will run:
+
+```bash
+mise exec -- ./bin/symphony /path/to/your/repo/WORKFLOW.md --port 4000 --i-understand-that-this-will-be-running-without-the-usual-guardrails
+```
+
+### One-Word Symphony Helper
+
+For day-to-day use, add the helper from `files/symphony-bashrc.sh` to your
+shell startup file:
+
+```bash
+cat /path/to/ralph-playbook/files/symphony-bashrc.sh >> ~/.bashrc
+source ~/.bashrc
+```
+
+Then run Symphony from any repo that has a `WORKFLOW.md`:
+
+```bash
+cd /path/to/your/repo
+symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails
+```
+
+The helper:
+
+- sources `~/.config/ralph-symphony/env` so `LINEAR_API_KEY` is loaded
+- uses the current directory's `WORKFLOW.md` by default
+- runs Symphony from `$SYMPHONY_DIR` or `~/dev/symphony/elixir`
+- auto-selects the first free dashboard port starting at `4000`
+- passes through Symphony CLI flags such as
+  `--i-understand-that-this-will-be-running-without-the-usual-guardrails`
+- still allows overrides:
+
+```bash
+SYMPHONY_DIR=/path/to/symphony/elixir symphony
+SYMPHONY_PORT=4010 symphony
+symphony /path/to/other/WORKFLOW.md --i-understand-that-this-will-be-running-without-the-usual-guardrails
+```
+
+### Smoke Test Issue
+
+Before assigning real work, create one low-risk Linear issue:
+
+```text
+Verify Symphony can clone the repo, read AGENTS.md, run validation, and open a no-op PR updating docs/symphony-smoke-test.md.
+```
+
+Keep `agent.max_concurrent_agents: 1` until this smoke test and one real issue complete cleanly.
+
+## 10. Create Specification Files
 
 Specs are the source of truth for what should be built. Each spec covers one **topic of concern** — a distinct aspect of a Job to Be Done (JTBD).
 
@@ -758,25 +1099,34 @@ specs/
 
 ---
 
-## 10. Update .gitignore
+## 11. Update .gitignore
 
-Ensure none of the Ralph files are accidentally ignored by git. All Ralph files (`AGENTS.md`, `CLAUDE.md`, `PROMPT_plan.md`, `PROMPT_build.md`, `IMPLEMENTATION_PLAN.md`, `loop.sh`, and `specs/`) should be **tracked by git** — they are part of the project's workflow.
+Ensure none of the workflow files are accidentally ignored by git. Ralph files (`AGENTS.md`, `CLAUDE.md`, `PROMPT_plan.md`, `PROMPT_build.md`, `IMPLEMENTATION_PLAN.md`, `loop.sh`, and `specs/`) and the Symphony file (`WORKFLOW.md`) should be **tracked by git** — they are part of the project's workflow.
 
 Check the existing `.gitignore` and make sure it does not exclude any of these files.
 
 No Ralph-specific entries need to be **added** to `.gitignore` unless you have a specific reason (e.g. log files from `--output-format=stream-json` if you redirect output to a file).
 
+For Symphony, do not commit local workspace or daemon output directories. Add entries only if those paths live inside the repository:
+
+```gitignore
+symphony-workspaces/
+log/
+```
+
 ---
 
-## 11. Security: Sandbox Setup
+## 12. Security: Sandbox Setup
 
 **This section is critical.** Ralph runs with dangerous permission-bypassing flags (`--dangerously-bypass-approvals-and-sandbox` for Codex, `--dangerously-skip-permissions` for Claude), which means it can execute any command, read any file, and make any network request without asking for approval. This bypasses the CLI's entire permission system.
+
+Symphony is also high trust. It runs as a long-lived daemon, creates workspaces, launches Codex app-server sessions, and lets agents push branches, open PRs, and update Linear. Do not run it on a personal laptop with all personal credentials exposed.
 
 ### The Philosophy
 
 > "It's not if it gets popped, it's when. And what is the blast radius?"
 
-Running Ralph without a sandbox exposes:
+Running Ralph or Symphony without isolation exposes:
 - Your API keys and credentials
 - Browser cookies and session tokens
 - SSH keys
@@ -784,14 +1134,28 @@ Running Ralph without a sandbox exposes:
 
 ### Minimum Viable Security
 
-At a minimum, Ralph should run in an environment with:
-- **Only the API keys needed for the task** (Anthropic API key, and any deploy keys)
+At a minimum, autonomous loops should run in an environment with:
+
+- **Only the API keys needed for the task** (OpenAI/Anthropic API key, Linear token, GitHub deploy key)
+- **No personal SSH key**
+- **No browser cookies**
+- **No production secrets** unless the task truly needs them
 - **No access to private data** beyond what the task requires
 - **Restricted network connectivity** where possible
 
+Recommended Symphony setup:
+
+```text
+Dedicated devbox or container
+Dedicated GitHub deploy key
+Dedicated Linear token for the agent workspace
+GitHub CLI authenticated only for the target org/repo
+WORKFLOW.md starts with max_concurrent_agents: 1
+```
+
 ### Sandbox Options
 
-**ASK THE HUMAN** which sandbox approach they want to use:
+**ASK THE HUMAN** which sandbox approach they want to use for Ralph and, separately, where Symphony should run:
 
 | Option | Best For | Setup Effort |
 |--------|----------|--------------|
@@ -844,7 +1208,7 @@ Regardless of sandbox choice, these escape hatches are always available:
 
 ---
 
-## 12. First Run: Planning Mode
+## 13. First Run: Planning Mode
 
 Planning mode performs gap analysis — it compares your specs against your existing code and generates a prioritized implementation plan. **Always run planning mode first before building.**
 
@@ -857,10 +1221,12 @@ Before running, verify all files are in place:
 - [ ] `PROMPT_plan.md` exists with correct paths and project goal
 - [ ] `PROMPT_build.md` exists with correct paths
 - [ ] `IMPLEMENTATION_PLAN.md` exists (even if just a placeholder comment)
+- [ ] `WORKFLOW.md` exists if this repo will use Symphony
 - [ ] `specs/` directory exists with at least one spec file
 - [ ] `loop.sh` exists and is executable (`chmod +x loop.sh`)
 - [ ] Your chosen CLI is installed and authenticated (`codex --version` or `claude --version`)
 - [ ] Git remote is configured (`git remote -v`)
+- [ ] GitHub CLI is authenticated if PR creation is part of the workflow (`gh auth status`)
 - [ ] You are on the correct branch
 
 ### Run Planning Mode
@@ -895,7 +1261,7 @@ Or with a max iteration limit (planning often completes in 1-2 iterations):
 
 ---
 
-## 13. Building Mode
+## 14. Building Mode
 
 Building mode picks tasks from `IMPLEMENTATION_PLAN.md`, implements them, runs tests, and commits. Each loop iteration handles exactly one task with a fresh context window.
 
@@ -938,7 +1304,114 @@ Building mode picks tasks from `IMPLEMENTATION_PLAN.md`, implements them, runs t
 
 ---
 
-## 14. Ongoing Operation & Tuning
+## 15. Symphony Outer Loop
+
+Use Symphony for issue-sized unattended work after the local Ralph scaffold works. Symphony should not replace Ralph at first; treat it as a daemonized version of "build one scoped thing, test it, commit it, push it, open a PR."
+
+### What Symphony Adds
+
+```text
+tracker polling
+per-issue workspaces
+bounded concurrency
+Codex app-server sessions
+stall/retry/reconciliation
+human-review handoff
+```
+
+The practical division of labor:
+
+| Tool | Use it for |
+|------|------------|
+| `codex` / `./loop.sh` | Local work, deliberate planning, small supervised batches |
+| `./loop.sh plan` | Generating or refreshing `IMPLEMENTATION_PLAN.md` from specs and code |
+| Symphony | Turning reviewed Linear issues into isolated branches, PRs, validation summaries, and `Human Review` handoff |
+
+### Run Symphony
+
+From the Symphony reference checkout:
+
+```bash
+cd /path/to/symphony/elixir
+export LINEAR_API_KEY="lin_api_..."
+
+# Start the daemon with the repo-owned workflow file.
+mise exec -- ./bin/symphony /path/to/your/repo/WORKFLOW.md
+
+# Optional dashboard/API.
+mise exec -- ./bin/symphony /path/to/your/repo/WORKFLOW.md --port 4000
+```
+
+If you installed the one-word shell helper from Section 9, use this instead:
+
+```bash
+cd /path/to/your/repo
+symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails
+```
+
+Run the same `symphony` helper in multiple repos if needed. The helper
+auto-selects the first free dashboard port starting at `4000`, so parallel
+Symphony daemons do not collide on the observability port. The port does not
+define work scope; the `WORKFLOW.md` in the current repo does.
+
+### Issue Scope Rule
+
+For Symphony, the Linear issue is the outer scope. `IMPLEMENTATION_PLAN.md` is supporting context only.
+
+Agents should not grab unrelated "most important" plan items just because they appear in `IMPLEMENTATION_PLAN.md`. If an issue is too large, the agent should create child Linear issues, comment with a planning summary, and move the parent to `Human Review` instead of attempting a sprawling implementation.
+
+### Recommended Rollout
+
+1. **Day 1: Evaluation**
+   - Set up Linear states and `WORKFLOW.md`.
+   - Run the smoke-test issue with `agent.max_concurrent_agents: 1`.
+
+2. **Day 2: One real issue**
+   - Use one small bug or docs task.
+   - Require a PR, validation summary, and `Human Review` state.
+
+3. **Day 3: Planning issue**
+   - Create one planning issue: "Analyze repo and specs; produce implementation plan and child issues."
+   - Let the agent update `specs/*`, `IMPLEMENTATION_PLAN.md`, and child Linear issues.
+   - Review before moving child issues to `Todo`.
+
+4. **Week 1: Parallelization**
+   - Raise concurrency to `2`.
+   - Add CI/rebase/merge rules only after branch, PR, comments, and validation are reliable.
+   - Tune `AGENTS.md` and `WORKFLOW.md` from observed failures.
+
+### Large Feature Flow
+
+```text
+Human idea
+  ↓
+Create one Linear planning issue
+  ↓
+Symphony/Codex creates or updates:
+  - specs/*
+  - IMPLEMENTATION_PLAN.md
+  - child Linear issues with dependencies
+  ↓
+Human reviews the plan
+  ↓
+Move child issues to Todo
+  ↓
+Symphony fans out across isolated workspaces
+```
+
+### Stop Conditions
+
+Stop the Symphony daemon or reduce concurrency if:
+
+- Agents open PRs without meaningful validation.
+- Multiple issues touch the same files and produce avoidable conflicts.
+- Agents repeatedly move outside issue scope.
+- `AGENTS.md` or `WORKFLOW.md` starts collecting status notes instead of durable operating instructions.
+- Linear comments are missing PR links, validation commands, risks, or review instructions.
+
+---
+
+## 16. Ongoing Operation & Tuning
 
 ### The Tuning Philosophy
 
@@ -956,12 +1429,16 @@ Ralph's effectiveness comes from iterative tuning, not prescriptive upfront conf
 | Ralph ignores requirements | Clarify or update specs | `specs/*.md` |
 | Ralph makes a recurring mistake | Add a guardrail instruction | `PROMPT_build.md` |
 | Ralph's plan is stale | Delete and regenerate | `./loop.sh plan` |
+| Symphony agents drift outside issue scope | Tighten issue-scope rule and handoff instructions | `WORKFLOW.md` |
+| Symphony agents collide on files | Lower concurrency or split issues with clearer dependencies | Linear + `WORKFLOW.md` |
+| Linear comments are incomplete | Add exact handoff checklist | `WORKFLOW.md` |
 
 ### Signs Ralph Can Discover
 
 Ralph steers itself by discovering signals in its environment. These aren't just prompt text:
 
 - **Prompt guardrails** — explicit instructions in `PROMPT_build.md`
+- **Workflow guardrails** — issue scope, branch, PR, Linear handoff instructions in `WORKFLOW.md`
 - **AGENTS.md** — operational learnings about how to build/test
 - **Utilities in codebase** — when you add a pattern to `src/lib/`, Ralph discovers it and follows it
 - **Existing code patterns** — Ralph imitates what it finds
@@ -989,7 +1466,7 @@ rm IMPLEMENTATION_PLAN.md
 
 ---
 
-## 15. Optional Enhancements
+## 17. Optional Enhancements
 
 These are additional enhancements that can be added on top of the core Ralph setup. Each is independent and optional.
 
@@ -1023,7 +1500,7 @@ run all required tests specified in the task definition. All required tests must
 999. Required tests derived from acceptance criteria must exist and pass before committing. Tests are part of implementation scope, not optional. Test-driven development approach: tests can be written first or alongside implementation.
 ```
 
-5. **Ensure your specs include acceptance criteria** — each spec file should have a section describing observable, verifiable outcomes (see Section 9).
+5. **Ensure your specs include acceptance criteria** — each spec file should have a section describing observable, verifiable outcomes (see Section 10).
 
 ### B. Work Branches (Scoped Planning)
 
@@ -1085,7 +1562,7 @@ gh pr create --base main --head ralph/user-auth-oauth --fill
 
 ---
 
-## 16. Troubleshooting
+## 18. Troubleshooting
 
 ### Common Issues
 
@@ -1102,6 +1579,11 @@ gh pr create --base main --head ralph/user-auth-oauth --fill
 | Ralph ignores `AGENTS.md` | `AGENTS.md` not referenced in prompt | The prompt references `@AGENTS.md` — ensure file exists at project root |
 | Context window errors | Too many/large spec files | Reduce spec verbosity; split large specs; keep each spec focused |
 | Ralph duplicates existing code | Missing "don't assume not implemented" | Ensure this phrase is in both prompts |
+| Symphony does not pick up issues | Missing Linear token, wrong project slug, or state not active | Check `LINEAR_API_KEY`, `tracker.project_slug`, and `tracker.active_states` in `WORKFLOW.md` |
+| Symphony fails at startup | Missing or invalid `WORKFLOW.md` YAML | Run with the explicit workflow path and fix front matter indentation |
+| Workspace clone fails | Bad repo URL or missing deploy key | Verify `hooks.after_create` manually in a clean directory |
+| Agent cannot open PRs | `gh` not authenticated in the Symphony environment | Run `gh auth status` and authenticate only the target org/repo |
+| Agents work on unrelated tasks | `WORKFLOW.md` lets plan priority override issue scope | Re-emphasize that Linear issue scope wins and plan is supporting context |
 
 ### Emergency Recovery
 
@@ -1126,7 +1608,7 @@ echo '<!-- Generated by LLM -->' > IMPLEMENTATION_PLAN.md
 
 ---
 
-## 17. Quick Reference
+## 19. Quick Reference
 
 ### File Summary
 
@@ -1138,7 +1620,9 @@ echo '<!-- Generated by LLM -->' > IMPLEMENTATION_PLAN.md
 | `AGENTS.md` | You (initial) | Ralph + You | Operational guide (build/test commands) |
 | `CLAUDE.md` | You (initial) | loop.sh (auto-synced from `AGENTS.md`) | Copy of AGENTS.md for Claude Code CLI compatibility |
 | `IMPLEMENTATION_PLAN.md` | Ralph | Ralph | Prioritized task list |
+| `WORKFLOW.md` | You (initial) | You + agents (tuning only) | Symphony runtime config and per-issue prompt |
 | `specs/*.md` | You + LLM | Rarely (Ralph can fix inconsistencies) | Requirements per topic of concern |
+| `.codex/skills/*` | You (optional) | You | Repo-local Codex skills for commit/push/pull/land/Linear workflows |
 
 ### Command Reference
 
@@ -1165,10 +1649,16 @@ Ctrl+C
 # Regenerate the plan
 rm IMPLEMENTATION_PLAN.md && ./loop.sh plan
 
+# Run Symphony from the reference implementation checkout
+cd /path/to/symphony/elixir
+export LINEAR_API_KEY="lin_api_..."
+mise exec -- ./bin/symphony /path/to/your/repo/WORKFLOW.md --port 4000
+
 # Check progress
 git log --oneline -20
 cat IMPLEMENTATION_PLAN.md
 cat AGENTS.md
+cat WORKFLOW.md
 ```
 
 ### Lifecycle Summary
@@ -1186,8 +1676,13 @@ cat AGENTS.md
    Ralph picks task → implements → tests → commits → next task
    (One task per iteration, fresh context each time)
 
-4. TUNE (ongoing)
+4. ORCHESTRATE (Symphony, optional)
+   Linear issue → isolated workspace → Codex app-server → branch/PR/comment/Human Review
+   (One issue per workspace, bounded concurrency)
+
+5. TUNE (ongoing)
    Observe Ralph → adjust AGENTS.md, prompts, specs, utilities
+   Observe Symphony → adjust WORKFLOW.md, Linear issue shape, concurrency
    Regenerate plan when stale
 ```
 
@@ -1204,3 +1699,5 @@ while :; do cat PROMPT.md | claude -p --dangerously-skip-permissions ; done
 ```
 
 Everything else — CLI selection, mode selection, iteration limits, AGENTS.md/CLAUDE.md sync, auto-push — is convenience layered on top.
+
+Symphony is the next layer up: a daemon that keeps a Codex app-server session running for each eligible issue in its own workspace. The repo still needs the same harness, but the control plane becomes Linear instead of the terminal.
