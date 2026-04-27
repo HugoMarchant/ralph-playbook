@@ -1,6 +1,6 @@
 # Ralph Loop Installation Guide
 
-This guide provides exhaustive, step-by-step instructions for implementing Ralph loops into a new or existing repository. It is designed to be followed by an LLM assistant (e.g. Claude Code) working with a human developer.
+This guide provides exhaustive, step-by-step instructions for implementing Ralph loops into a new or existing repository. It is designed to be followed by an LLM assistant (e.g. Codex CLI or Claude Code) working with a human developer.
 
 > **For the implementing LLM:** At several steps you will need information from the human you are working with. These are marked with **ASK THE HUMAN**. Do not guess or assume — ask them directly using your question/prompt tools before proceeding.
 
@@ -323,132 +323,272 @@ Ralph will populate this file during the first planning mode run. Do not pre-fil
 
 `loop.sh` is the outer loop that repeatedly invokes the AI agent CLI with the prompt file. Each iteration = one fresh context window = one task.
 
-The script defaults to **Codex CLI** (`codex`). Set `RALPH_CLI=claude` to use Claude Code CLI instead.
+The reference implementation is **Codex-first**: it defaults to **Codex CLI** (`codex`) and exposes a `--fast` toggle that maps to Codex `fast_mode` plus `--effort low|medium|high|xhigh` for Codex reasoning effort. Set `RALPH_CLI=claude` to use Claude Code CLI instead.
 
 ### Template
 
 Create `loop.sh` in the project root:
 
 ```bash
-#!/bin/bash
-# Ralph Loop Script
-#
-# Supports both Codex CLI (default) and Claude Code CLI.
-# Set RALPH_CLI=claude to use Claude Code instead of Codex.
-#
-# Usage: ./loop.sh [plan] [max_iterations]
-# Examples:
-#   ./loop.sh              # Build mode, unlimited iterations (Codex)
-#   ./loop.sh 20           # Build mode, max 20 iterations
-#   ./loop.sh plan         # Plan mode, unlimited iterations
-#   ./loop.sh plan 5       # Plan mode, max 5 iterations
-#
-# With Claude Code CLI:
-#   RALPH_CLI=claude ./loop.sh
-#   RALPH_CLI=claude RALPH_MODEL=sonnet ./loop.sh 20
+#!/usr/bin/env bash
+set -euo pipefail
 
-# ─── CLI Configuration ──────────────────────────────────────────────
-# RALPH_CLI: "codex" (default) or "claude"
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  ./loop.sh [plan] [max_iterations] [--fast] [--effort low|medium|high|xhigh]
+
+Examples:
+  ./loop.sh
+  ./loop.sh 20
+  ./loop.sh plan
+  ./loop.sh plan 5
+  ./loop.sh --fast
+  ./loop.sh plan --fast 2
+  ./loop.sh --effort high
+  ./loop.sh plan --effort xhigh 2
+
+Environment:
+  RALPH_CLI=codex|claude          CLI to use (default: codex)
+  RALPH_MODEL=<model>             Optional model override
+  RALPH_SEARCH=1                  Enable Codex live web search
+  RALPH_PUSH=0                    Disable git push after each committed iteration
+  RALPH_ALLOW_DIRTY=1             Allow starting from a dirty worktree
+EOF
+}
+
 RALPH_CLI="${RALPH_CLI:-codex}"
+MODE="build"
+PROMPT_FILE="PROMPT_build.md"
+MAX_ITERATIONS=0
+FAST_MODE_ENABLED=0
+THINKING_EFFORT=""
+SEEN_PLAN=0
+SEEN_MAX_ITERATIONS=0
 
-# RALPH_MODEL: Model override (Claude only). Default: "opus"
-#   Examples: opus, sonnet
-RALPH_MODEL="${RALPH_MODEL:-opus}"
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    plan)
+      [[ ${SEEN_PLAN} -eq 0 ]] || {
+        usage
+        exit 1
+      }
+      MODE="plan"
+      PROMPT_FILE="PROMPT_plan.md"
+      SEEN_PLAN=1
+      shift
+      ;;
+    --fast)
+      FAST_MODE_ENABLED=1
+      shift
+      ;;
+    --effort)
+      [[ $# -ge 2 ]] || {
+        usage
+        exit 1
+      }
+      THINKING_EFFORT="${2}"
+      case "${THINKING_EFFORT}" in
+        low|medium|high|xhigh) ;;
+        *)
+          usage
+          exit 1
+          ;;
+      esac
+      shift 2
+      ;;
+    --effort=*)
+      THINKING_EFFORT="${1#--effort=}"
+      case "${THINKING_EFFORT}" in
+        low|medium|high|xhigh) ;;
+        *)
+          usage
+          exit 1
+          ;;
+      esac
+      shift
+      ;;
+    [0-9]*)
+      [[ "${1}" =~ ^[0-9]+$ ]] && [[ ${SEEN_MAX_ITERATIONS} -eq 0 ]] || {
+        usage
+        exit 1
+      }
+      MAX_ITERATIONS="${1}"
+      SEEN_MAX_ITERATIONS=1
+      shift
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+done
 
-# ─── Parse arguments ────────────────────────────────────────────────
-if [ "$1" = "plan" ]; then
-    MODE="plan"
-    PROMPT_FILE="PROMPT_plan.md"
-    MAX_ITERATIONS=${2:-0}
-elif [[ "$1" =~ ^[0-9]+$ ]]; then
-    MODE="build"
-    PROMPT_FILE="PROMPT_build.md"
-    MAX_ITERATIONS=$1
-else
-    MODE="build"
-    PROMPT_FILE="PROMPT_build.md"
-    MAX_ITERATIONS=0
+if ! command -v git >/dev/null 2>&1; then
+  echo "Error: git is required." >&2
+  exit 1
 fi
+
+case "${RALPH_CLI}" in
+  codex)
+    if ! command -v codex >/dev/null 2>&1; then
+      echo "Error: Codex CLI not found." >&2
+      echo "Install with: npm install -g @openai/codex" >&2
+      echo "Then authenticate with: codex login" >&2
+      exit 1
+    fi
+    ;;
+  claude)
+    if ! command -v claude >/dev/null 2>&1; then
+      echo "Error: Claude Code CLI not found." >&2
+      echo "Install with: npm install -g @anthropic-ai/claude-code" >&2
+      exit 1
+    fi
+    if [[ "${FAST_MODE_ENABLED}" == "1" ]]; then
+      echo "Error: --fast is only supported when RALPH_CLI=codex." >&2
+      exit 1
+    fi
+    if [[ -n "${THINKING_EFFORT}" ]]; then
+      echo "Error: --effort is only supported when RALPH_CLI=codex." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Error: unsupported RALPH_CLI='${RALPH_CLI}'. Use 'codex' or 'claude'." >&2
+    exit 1
+    ;;
+esac
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "Error: run loop.sh from inside a git repository." >&2
+  exit 1
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}"
+
+if [[ ! -f "${PROMPT_FILE}" ]]; then
+  echo "Error: ${PROMPT_FILE} not found in ${REPO_ROOT}." >&2
+  exit 1
+fi
+
+CURRENT_BRANCH="$(git branch --show-current)"
+if [[ -z "${CURRENT_BRANCH}" ]]; then
+  echo "Error: detached HEAD is not supported for Ralph runs." >&2
+  exit 1
+fi
+
+if [[ "${RALPH_ALLOW_DIRTY:-0}" != "1" ]] && [[ -n "$(git status --porcelain)" ]]; then
+  echo "Error: git worktree is not clean." >&2
+  echo "Ralph commits once per iteration and can accidentally include unrelated changes." >&2
+  echo "Commit or stash current work first, or override with RALPH_ALLOW_DIRTY=1." >&2
+  exit 1
+fi
+
+PUSH_ENABLED="${RALPH_PUSH:-1}"
+if [[ "${PUSH_ENABLED}" == "1" ]] && ! git remote get-url origin >/dev/null 2>&1; then
+  echo "Warning: no origin remote found; disabling push for this run." >&2
+  PUSH_ENABLED="0"
+fi
+
+MODEL_DISPLAY=""
+if [[ "${RALPH_CLI}" == "codex" ]]; then
+  AGENT_CMD=(codex exec -C "${REPO_ROOT}")
+  if [[ -n "${RALPH_MODEL:-}" ]]; then
+    AGENT_CMD+=(-m "${RALPH_MODEL}")
+    MODEL_DISPLAY="${RALPH_MODEL}"
+  fi
+  if [[ -n "${THINKING_EFFORT}" ]]; then
+    AGENT_CMD+=(-c "model_reasoning_effort=\"${THINKING_EFFORT}\"")
+  fi
+  if [[ "${FAST_MODE_ENABLED}" == "1" ]]; then
+    AGENT_CMD+=(--enable fast_mode)
+    FAST_MODE_DESCRIPTION='on (--enable fast_mode)'
+  else
+    AGENT_CMD+=(--disable fast_mode)
+    FAST_MODE_DESCRIPTION='off (--disable fast_mode)'
+  fi
+  if [[ "${RALPH_SEARCH:-0}" == "1" ]]; then
+    AGENT_CMD+=(--search)
+  fi
+  AGENT_CMD+=(--dangerously-bypass-approvals-and-sandbox -)
+  CLI_DISPLAY="Codex CLI ($(codex --version))"
+  EXECUTION_DESCRIPTION="dangerous bypass"
+else
+  MODEL_DISPLAY="${RALPH_MODEL:-opus}"
+  AGENT_CMD=(
+    claude -p
+    --dangerously-skip-permissions
+    --output-format=stream-json
+    --model "${MODEL_DISPLAY}"
+    --verbose
+  )
+  FAST_MODE_DESCRIPTION='n/a (Codex-only)'
+  CLI_DISPLAY="Claude Code CLI ($(claude --version))"
+  EXECUTION_DESCRIPTION="dangerous skip permissions"
+fi
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "CLI: ${CLI_DISPLAY}"
+echo "Mode: ${MODE}"
+echo "Prompt: ${PROMPT_FILE}"
+echo "Branch: ${CURRENT_BRANCH}"
+echo "Execution: ${EXECUTION_DESCRIPTION}"
+echo "Fast mode: ${FAST_MODE_DESCRIPTION}"
+if [[ -n "${MODEL_DISPLAY}" ]]; then
+  echo "Model: ${MODEL_DISPLAY}"
+fi
+if [[ -n "${THINKING_EFFORT}" ]]; then
+  echo "Thinking effort: ${THINKING_EFFORT}"
+fi
+if [[ ${MAX_ITERATIONS} -gt 0 ]]; then
+  echo "Max iterations: ${MAX_ITERATIONS}"
+fi
+if [[ "${PUSH_ENABLED}" == "1" ]]; then
+  echo "Push: enabled"
+else
+  echo "Push: disabled"
+fi
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 ITERATION=0
-CURRENT_BRANCH=$(git branch --show-current)
 
-# ─── Validate CLI is installed ──────────────────────────────────────
-if [ "$RALPH_CLI" = "claude" ]; then
-    if ! command -v claude &> /dev/null; then
-        echo "Error: Claude Code CLI not found"
-        echo "Install: npm install -g @anthropic-ai/claude-code"
-        exit 1
-    fi
-    CLI_DISPLAY="Claude Code CLI (claude)"
-else
-    if ! command -v codex &> /dev/null; then
-        echo "Error: Codex CLI not found"
-        echo "Install: npm install -g @openai/codex"
-        echo "Then:    codex login"
-        exit 1
-    fi
-    CLI_DISPLAY="Codex CLI (codex)"
-fi
-
-# ─── Display configuration ──────────────────────────────────────────
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "CLI:    $CLI_DISPLAY"
-echo "Mode:   $MODE"
-echo "Prompt: $PROMPT_FILE"
-echo "Branch: $CURRENT_BRANCH"
-[ "$RALPH_CLI" = "claude" ] && echo "Model:  $RALPH_MODEL"
-[ $MAX_ITERATIONS -gt 0 ] && echo "Max:    $MAX_ITERATIONS iterations"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-# ─── Verify prompt file exists ──────────────────────────────────────
-if [ ! -f "$PROMPT_FILE" ]; then
-    echo "Error: $PROMPT_FILE not found"
-    exit 1
-fi
-
-# ─── Main loop ──────────────────────────────────────────────────────
 while true; do
-    if [ $MAX_ITERATIONS -gt 0 ] && [ $ITERATION -ge $MAX_ITERATIONS ]; then
-        echo "Reached max iterations: $MAX_ITERATIONS"
-        break
+  if [[ ${MAX_ITERATIONS} -gt 0 && ${ITERATION} -ge ${MAX_ITERATIONS} ]]; then
+    echo "Reached max iterations: ${MAX_ITERATIONS}"
+    break
+  fi
+
+  START_HEAD="$(git rev-parse HEAD)"
+  echo
+  echo "=== Ralph iteration $((ITERATION + 1)) (${MODE}) ==="
+
+  if ! "${AGENT_CMD[@]}" < "${PROMPT_FILE}"; then
+    echo "Ralph iteration failed; stopping loop." >&2
+    exit 1
+  fi
+
+  if [[ -f "AGENTS.md" ]]; then
+    cp AGENTS.md CLAUDE.md
+  fi
+
+  END_HEAD="$(git rev-parse HEAD)"
+  WORKTREE_STATUS="$(git status --porcelain)"
+
+  if [[ "${END_HEAD}" == "${START_HEAD}" ]]; then
+    if [[ -n "${WORKTREE_STATUS}" ]]; then
+      echo "Iteration ended without a commit and left a dirty worktree; stopping." >&2
+      exit 1
     fi
+    echo "No new commit produced; stopping loop."
+    break
+  fi
 
-    # Run Ralph iteration with the configured CLI
-    if [ "$RALPH_CLI" = "claude" ]; then
-        # Claude Code CLI
-        # -p: Headless mode (non-interactive, reads from stdin)
-        # --dangerously-skip-permissions: Auto-approve all tool calls
-        # --output-format=stream-json: Structured output for logging/monitoring
-        # --model: Primary model for reasoning (opus or sonnet)
-        # --verbose: Detailed execution logging
-        cat "$PROMPT_FILE" | claude -p \
-            --dangerously-skip-permissions \
-            --output-format=stream-json \
-            --model "$RALPH_MODEL" \
-            --verbose
-    else
-        # Codex CLI (default)
-        # exec: Non-interactive execution mode, reads prompt from stdin via "-"
-        # --dangerously-bypass-approvals-and-sandbox: Auto-approve all tool calls
-        cat "$PROMPT_FILE" | codex exec \
-            --dangerously-bypass-approvals-and-sandbox \
-            -
-    fi
+  if [[ "${PUSH_ENABLED}" == "1" ]]; then
+    git push origin "${CURRENT_BRANCH}" || git push -u origin "${CURRENT_BRANCH}"
+  fi
 
-    # Sync AGENTS.md → CLAUDE.md after each iteration (Ralph may have updated AGENTS.md)
-    if [ -f "AGENTS.md" ]; then
-        cp AGENTS.md CLAUDE.md
-    fi
-
-    # Push changes after each iteration
-    git push origin "$CURRENT_BRANCH" || {
-        echo "Failed to push. Creating remote branch..."
-        git push -u origin "$CURRENT_BRANCH"
-    }
-
-    ITERATION=$((ITERATION + 1))
-    echo -e "\n\n======================== LOOP $ITERATION ========================\n"
+  ITERATION=$((ITERATION + 1))
 done
 ```
 
@@ -477,15 +617,40 @@ You can also hardcode the default by changing the line near the top of the scrip
 RALPH_CLI="${RALPH_CLI:-codex}"    # Change "codex" to "claude" to make Claude the default
 ```
 
-### Model Selection (Claude Only)
+### Fast Mode (Codex Only)
 
-When using Claude Code CLI, you can configure the model:
+The reference loop exposes a `--fast` toggle that maps directly to Codex `fast_mode`:
 
 ```bash
-# Use Opus (default) — best for planning and complex reasoning
+./loop.sh --fast
+./loop.sh plan --fast 2
+```
+
+Without `--fast`, the script explicitly passes `--disable fast_mode` so the run mode is always obvious in logs and shell history. `--fast` is rejected when `RALPH_CLI=claude`.
+
+### Thinking Effort (Codex Only)
+
+Set Codex reasoning effort per run with `--effort`:
+
+```bash
+./loop.sh --effort high
+./loop.sh plan --effort xhigh 2
+```
+
+Valid values are `low`, `medium`, `high`, and `xhigh`. The script passes this through as `-c model_reasoning_effort="..."`. `--effort` is rejected when `RALPH_CLI=claude`.
+
+### Model Selection
+
+You can override the model for either CLI with `RALPH_MODEL`:
+
+```bash
+# Override Codex's default model
+RALPH_MODEL=gpt-5.1-codex-max ./loop.sh --fast
+
+# Use Opus (default) for Claude
 RALPH_CLI=claude ./loop.sh plan
 
-# Use Sonnet — faster and cheaper, good for well-defined build tasks
+# Use Sonnet for Claude when tasks are clear and well-defined
 RALPH_CLI=claude RALPH_MODEL=sonnet ./loop.sh 20
 ```
 
@@ -496,6 +661,9 @@ RALPH_CLI=claude RALPH_MODEL=sonnet ./loop.sh 20
 | Flag | Purpose |
 |------|---------|
 | `exec` | **Execution mode.** Non-interactive, reads prompt from stdin. Required for automation. |
+| `--enable fast_mode` | **Enable Codex fast mode.** The reference loop adds this when you pass `--fast`. |
+| `--disable fast_mode` | **Make the run mode explicit.** The reference loop passes this when `--fast` is not set. |
+| `-c model_reasoning_effort="..."` | **Set Codex reasoning effort.** The reference loop adds this when you pass `--effort low`, `medium`, `high`, or `xhigh`. |
 | `--dangerously-bypass-approvals-and-sandbox` | **Bypasses all approval prompts and sandbox restrictions.** Required for fully automated runs. This is why a sandbox environment is critical — see [Section 11](#11-security-sandbox-setup). |
 | `-` | **Read from stdin.** Tells Codex to read the prompt from the pipe. |
 
@@ -978,10 +1146,14 @@ echo '<!-- Generated by LLM -->' > IMPLEMENTATION_PLAN.md
 # Planning mode (generates/updates IMPLEMENTATION_PLAN.md)
 ./loop.sh plan          # Unlimited iterations (uses Codex by default)
 ./loop.sh plan 3        # Max 3 iterations
+./loop.sh plan --fast 2 # Max 2 iterations with Codex fast mode enabled
+./loop.sh plan --effort xhigh 2 # Max 2 iterations with xhigh Codex reasoning effort
 
 # Building mode (implements tasks from plan)
 ./loop.sh               # Unlimited iterations
 ./loop.sh 20            # Max 20 iterations (20 tasks)
+./loop.sh --fast        # Unlimited iterations with Codex fast mode enabled
+./loop.sh --effort high # Unlimited iterations with high Codex reasoning effort
 
 # Use Claude Code CLI instead of Codex
 RALPH_CLI=claude ./loop.sh plan

@@ -1593,12 +1593,13 @@
                 <span>bash</span>
                 <button class="copy-btn" onclick="copyCode(this)">Copy</button>
               </div>
-              <pre><code>while :; do cat PROMPT.md | claude ; done</code></pre>
+              <pre><code>while :; do cat PROMPT.md | codex exec --dangerously-bypass-approvals-and-sandbox - ; done</code></pre>
             </div>
 
             <p>
               <em>Note:</em> The same approach can be used with other CLIs; e.g.
-              <code>amp</code>, <code>codex</code>, <code>opencode</code>, etc.
+              <code>claude</code>, <code>amp</code>, <code>opencode</code>,
+              etc. The reference loop in this repo now uses Codex by default.
             </p>
 
             <h4>What controls task continuation?</h4>
@@ -1607,7 +1608,7 @@
             <ol>
               <li>
                 <strong>Bash loop runs</strong> → feeds
-                <code>PROMPT.md</code> to claude
+                <code>PROMPT.md</code> to Codex CLI (by default)
               </li>
               <li>
                 <strong>PROMPT.md instructs</strong> → "Study
@@ -1678,8 +1679,9 @@
             <h3>Enhanced Loop Code Example</h3>
 
             <p>
-              Wraps core loop with mode selection (plan/build), max-iterations
-              support, and git push after each iteration.
+              The reference <code>files/loop.sh</code> in this repo is now
+              Codex-first and adds fast-mode and thinking-effort toggles on top
+              of the usual Ralph loop behavior.
             </p>
 
             <p><em>This enhancement uses two saved prompt files:</em></p>
@@ -1694,89 +1696,44 @@
               </li>
             </ul>
 
-            <details>
-              <summary>Enhanced `loop.sh` script</summary>
-              <div class="details-content">
-                <div class="code-block">
-                  <div class="code-block-header">
-                    <span>loop.sh</span>
-                    <button class="copy-btn" onclick="copyCode(this)">
-                      Copy
-                    </button>
-                  </div>
-                  <pre><code><span class="token-comment">#!/bin/bash</span>
-<span class="token-comment"># Usage: ./loop.sh [plan] [max_iterations]</span>
-<span class="token-comment"># Examples:</span>
-<span class="token-comment">#   ./loop.sh              # Build mode, unlimited tasks</span>
-<span class="token-comment">#   ./loop.sh 20           # Build mode, max 20 tasks</span>
-<span class="token-comment">#   ./loop.sh plan         # Plan mode, unlimited tasks</span>
-<span class="token-comment">#   ./loop.sh plan 5       # Plan mode, max 5 tasks</span>
-
-<span class="token-comment"># Parse arguments</span>
-<span class="token-keyword">if</span> [ <span class="token-string">"$1"</span> = <span class="token-string">"plan"</span> ]; <span class="token-keyword">then</span>
-    <span class="token-comment"># Plan mode</span>
-    MODE=<span class="token-string">"plan"</span>
-    PROMPT_FILE=<span class="token-string">"PROMPT_plan.md"</span>
-    MAX_ITERATIONS=<span class="token-variable">${2:-0}</span>
-<span class="token-keyword">elif</span> [[ <span class="token-string">"$1"</span> =~ ^[0-9]+$ ]]; <span class="token-keyword">then</span>
-    <span class="token-comment"># Build mode with max tasks</span>
-    MODE=<span class="token-string">"build"</span>
-    PROMPT_FILE=<span class="token-string">"PROMPT_build.md"</span>
-    MAX_ITERATIONS=$1
-<span class="token-keyword">else</span>
-    <span class="token-comment"># Build mode, unlimited</span>
-    MODE=<span class="token-string">"build"</span>
-    PROMPT_FILE=<span class="token-string">"PROMPT_build.md"</span>
-    MAX_ITERATIONS=0
-<span class="token-keyword">fi</span>
-
-ITERATION=0
-CURRENT_BRANCH=$(<span class="token-function">git branch --show-current</span>)
-
-<span class="token-function">echo</span> <span class="token-string">"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"</span>
-<span class="token-function">echo</span> <span class="token-string">"Mode:   $MODE"</span>
-<span class="token-function">echo</span> <span class="token-string">"Prompt: $PROMPT_FILE"</span>
-<span class="token-function">echo</span> <span class="token-string">"Branch: $CURRENT_BRANCH"</span>
-[ $MAX_ITERATIONS -gt 0 ] && <span class="token-function">echo</span> <span class="token-string">"Max:    $MAX_ITERATIONS iterations"</span>
-<span class="token-function">echo</span> <span class="token-string">"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"</span>
-
-<span class="token-comment"># Verify prompt file exists</span>
-<span class="token-keyword">if</span> [ ! -f <span class="token-string">"$PROMPT_FILE"</span> ]; <span class="token-keyword">then</span>
-    <span class="token-function">echo</span> <span class="token-string">"Error: $PROMPT_FILE not found"</span>
-    exit 1
-<span class="token-keyword">fi</span>
-
-<span class="token-keyword">while</span> true; <span class="token-keyword">do</span>
-    <span class="token-keyword">if</span> [ $MAX_ITERATIONS -gt 0 ] && [ $ITERATION -ge $MAX_ITERATIONS ]; <span class="token-keyword">then</span>
-        <span class="token-function">echo</span> <span class="token-string">"Reached max iterations: $MAX_ITERATIONS"</span>
-        <span class="token-keyword">break</span>
-    <span class="token-keyword">fi</span>
-
-    <span class="token-comment"># Run Ralph iteration with selected prompt</span>
-    <span class="token-comment"># -p: Headless mode (non-interactive, reads from stdin)</span>
-    <span class="token-comment"># --dangerously-skip-permissions: Auto-approve all tool calls (YOLO mode)</span>
-    <span class="token-comment"># --output-format=stream-json: Structured output for logging/monitoring</span>
-    <span class="token-comment"># --model opus: Primary agent uses Opus for complex reasoning (task selection, prioritization)</span>
-    <span class="token-comment">#               Can use 'sonnet' in build mode for speed if plan is clear and tasks well-defined</span>
-    <span class="token-comment"># --verbose: Detailed execution logging</span>
-    <span class="token-function">cat</span> <span class="token-string">"$PROMPT_FILE"</span> | claude -p \
-        --dangerously-skip-permissions \
-        --output-format=stream-json \
-        --model opus \
-        --verbose
-
-    <span class="token-comment"># Push changes after each iteration</span>
-    <span class="token-function">git push</span> origin <span class="token-string">"$CURRENT_BRANCH"</span> || {
-        <span class="token-function">echo</span> <span class="token-string">"Failed to push. Creating remote branch..."</span>
-        <span class="token-function">git push</span> -u origin <span class="token-string">"$CURRENT_BRANCH"</span>
-    }
-
-    ITERATION=$((ITERATION + 1))
-    <span class="token-function">echo</span> -e <span class="token-string">"\n\n======================== LOOP $ITERATION ========================\n"</span>
-<span class="token-keyword">done</span></code></pre>
-                </div>
+            <div class="code-block">
+              <div class="code-block-header">
+                <span>bash</span>
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
               </div>
-            </details>
+              <pre><code>./loop.sh [plan] [max_iterations] [--fast] [--effort low|medium|high|xhigh]</code></pre>
+            </div>
+
+            <p><em>Reference loop behavior:</em></p>
+            <ul>
+              <li>
+                Defaults to Codex CLI;
+                <code>RALPH_CLI=claude</code> remains available as an explicit
+                override
+              </li>
+              <li>
+                <code>--fast</code> enables Codex <code>fast_mode</code>;
+                without it the script explicitly disables fast mode
+              </li>
+              <li>
+                <code>--effort low|medium|high|xhigh</code> sets Codex
+                <code>model_reasoning_effort</code> for that run
+              </li>
+              <li>
+                Stops cleanly when an iteration produces no new commit instead
+                of spinning forever
+              </li>
+              <li>
+                Pushes after each successful committed iteration, creating the
+                remote branch if needed
+              </li>
+            </ul>
+
+            <p>
+              See <code>files/loop.sh</code> for the current reference script
+              and <code>INSTALLATION.md</code> for the full installable
+              template.
+            </p>
 
             <h4>Mode Selection</h4>
             <ul>
@@ -1787,6 +1744,14 @@ CURRENT_BRANCH=$(<span class="token-function">git branch --show-current</span>)
               <li>
                 <code>plan</code> keyword → Uses <code>PROMPT_plan.md</code> for
                 planning (gap analysis, plan generation)
+              </li>
+              <li>
+                <code>--fast</code> keyword → Enables Codex fast mode for that
+                run
+              </li>
+              <li>
+                <code>--effort low|medium|high|xhigh</code> → Sets Codex
+                reasoning effort for that run
               </li>
             </ul>
 
@@ -1805,30 +1770,6 @@ CURRENT_BRANCH=$(<span class="token-function">git branch --show-current</span>)
               </li>
               <li>
                 <code>./loop.sh 20</code> runs max 20 tasks then stops
-              </li>
-            </ul>
-
-            <h4>Claude CLI Flags Explained</h4>
-            <ul>
-              <li>
-                <code>-p</code> (headless mode): Enables non-interactive
-                operation, reads prompt from stdin
-              </li>
-              <li>
-                <code>--dangerously-skip-permissions</code>: Bypasses all
-                permission prompts for fully automated runs
-              </li>
-              <li>
-                <code>--output-format=stream-json</code>: Outputs structured
-                JSON for logging/monitoring/visualization
-              </li>
-              <li>
-                <code>--model opus</code>: Primary agent uses Opus for task
-                selection, prioritization, and coordination (can use
-                <code>sonnet</code> for speed if tasks are clear)
-              </li>
-              <li>
-                <code>--verbose</code>: Provides detailed execution logging
               </li>
             </ul>
           </section>
@@ -1919,9 +1860,9 @@ CURRENT_BRANCH=$(<span class="token-function">git branch --show-current</span>)
               <pre><code>chmod +x loop.sh</code></pre>
             </div>
             <p>
-              <em>Core function:</em> Continuously feeds prompt file to claude,
-              manages iteration limits, and pushes changes after each task
-              completion.
+              <em>Core function:</em> Continuously feeds the selected prompt
+              file to Codex by default, manages iteration limits, and pushes
+              changes after each task completion.
             </p>
 
             <h3>PROMPTS</h3>
